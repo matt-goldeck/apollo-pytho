@@ -32,8 +32,11 @@ def get_weibo_results(topic):
                 proc_post['text'] = post_content[-1].get_text().encode('utf-8')
                 # Get rid of new lines and execessive whitespace
                 proc_post['text'] = proc_post['text'].replace('\n', '').strip()
+                proc_post['text'] = proc_post['text'].replace('  ', '')
 
+                # Used to distinguish posts from each other
                 proc_post['hash'] = hash(proc_post['text'])
+                proc_post['topic'] = topic
 
                 # = Username =
                 # Strange formatting on Weibo sometimes (rarely) obfuscates the nick-name

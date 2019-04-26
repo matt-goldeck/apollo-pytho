@@ -1,4 +1,4 @@
-import MySQLdb
+import MySQLdb, time
 from secrets import corpora # Improve this later
 from weibo import get_weibo_results
 
@@ -10,7 +10,8 @@ from weibo import get_weibo_results
     # Create entries in the xref table to link oracle content to the -
     # - source topic (which may have many, many appearances in freeweibo_topics)
 
-def scrape_weibo():
+def scrape_weibo(debug_flag=False):
+    begin_time = time.time()
     # ==Connect to corpora==
     db = MySQLdb.connect(host=corpora['host'], user=corpora['username'], passwd=corpora['password'],
      db=corpora['database'], use_unicode=True)
@@ -22,16 +23,23 @@ def scrape_weibo():
 
     # == Process topics ==
     saved_topics = 0
+    saved_posts = []
+
     for topic in topic_list:
-        process_topic(db, cursor, topic)
-        saved_topics += 1
+        saved_posts += [process_topic(db, cursor, topic)]
 
     # == Save, close connection ==
     db.commit()
     db.close()
 
-    return saved_topics;
-
+    # == Log info ==
+    if(debug_flag):
+        print("===============Weibo Scraper===================")
+        print("*** Succesfully scraped {0} freeweibo topics! ***".format(len(topic_list)))
+        print("** Elapsed time: {0} seconds **)".format(time.time() - begin_time))
+        for num_saved, topic in zip(saved_posts, topic_list):
+            print ("Topic: [{0}] | Saved: [{1}]".format(topic, num_saved))
+        print("===============================================")
 def pull_freeweibo_topics(cursor, topic=None):
     # pull_freeweibo_topics()
     # Grabs all topics we have from freeweibo that match a topic; distinct if topic is None
@@ -55,20 +63,41 @@ def process_topic(db, cursor, topic):
     # Scrapes a list of posts relating to the topic, stores them, and makes entries in xref table
 
     post_list = get_weibo_results(topic)
-    existing_hash_set = get_hash_set(cursor)
-    new_hash_list = []
 
-    # Iterate through backwards to avoid index deletion mishaps
+    existing_hash_dict = get_hash_set(cursor) # Mapping of all hashes we have per topic
+
+    # TODO: Probably a good way of doing this with a list comprehension but I give up
+    all_hashes = []
+    for topic in existing_hash_dict:
+        run_list = existing_hash_dict[topic]
+        all_hashes += run_list
+
+    run_hash_list = [] # keep track of posts we've already processed in this run
+    auxillary_hash_list = [] # Keep track of posts we have, but need to associate topics to
+
+    # Iterate through list backwards to avoid index deletion mishaps
     for post in reversed(post_list):
-        # Hash text and topic to determine if we've already stored this post for this topic
-        if post['hash'] not in existing_hash_set and post['hash'] not in new_hash_list:
-            new_hash_list = new_hash_list + [post['hash']] # Add new post to hash set
-            post['topic'] = topic
-        else:
+        if post['hash'] in run_hash_list: # We've already found this post in this topic run
             post_list.remove(post)
+        else:
+            run_hash_list.append(post['hash'])
+            if post['hash'] in all_hashes: # We have this post, but we need to check for this topic
+                post_list.remove(post)
+                try:
+                    if post['hash'] in existing_hash_dict[topic]:
+                        pass # We already have it; don't need
+                    else:
+                        pass # Don't yet have this post for this topic; make association
+                        post_list.remove
+                except Exception as e:
+                    pass # This is a new topic; need to make the association
+            else:
+                pass # We don't have this post yet; store it.
 
     if post_list:
         store_posts(db, cursor, post_list)
+
+    return len(post_list)
 
 def store_posts(db, cursor, post_list):
     # store_posts()
@@ -125,12 +154,18 @@ def build_crossref_query(db, post_list):
     return sql
 
 def get_hash_set(cursor):
-    # Return the set of all hashes in weibo_oracle
-    sql = "SELECT hash FROM weibo_oracle;"
-    cursor.execute(sql)
-    hashed_set = {hm[0] for hm in cursor.fetchall()}
+    # get_hash_set():
+    # Return a dict of topics mapped to lists of hashes we have for that topic
+    # NOTE: Format -> {'Topic0':{hashes we have for this topic}, 'Topic1':{...}, ...}
 
-    return hashed_set
+    sql = "SELECT weibo_oracle.hash, weibo_oracle_xref.topic FROM weibo_oracle INNER JOIN weibo_oracle_xref ON weibo_oracle.kp = weibo_oracle_xref.oracle_kp;"
+
+    cursor.execute(sql)
+    results = cursor.fetchall()
+
+    hashed_dict = {topic:{x[0] for x in results if x[1] == topic} for hash_val, topic in results}
+
+    return hashed_dict
 
 def augment_post_list_with_kp(cursor, post_list):
     # augment_post_list_with_kp()

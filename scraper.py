@@ -2,14 +2,6 @@ import MySQLdb, time
 from secrets import corpora # Improve this later
 from weibo import get_weibo_results
 
-# Overall Plan
-# Get all unique topics from database
-# Pull hash set of (text + topic) from weibo_oracle
-    # For each topic scrape associated Weibo posts
-    # If hash already in table, ignore, otherwise store it in weibo_oracle
-    # Create entries in the xref table to link oracle content to the -
-    # - source topic (which may have many, many appearances in freeweibo_topics)
-
 def scrape_weibo(debug_flag=False):
     begin_time = time.time()
     # ==Connect to corpora==
@@ -27,9 +19,9 @@ def scrape_weibo(debug_flag=False):
 
     for topic in topic_list:
         saved_posts += [process_topic(db, cursor, topic)]
+        db.commit()
 
-    # == Save, close connection ==
-    db.commit()
+    # == Close connection ==
     db.close()
 
     # == Log info ==
@@ -73,7 +65,7 @@ def process_topic(db, cursor, topic):
         all_hashes += run_list
 
     run_hash_list = [] # keep track of posts we've already processed in this run
-    auxillary_hash_list = [] # Keep track of posts we have, but need to associate topics to
+    auxillary_post_list = [] # Keep track of posts we have, but need to associate topics to
 
     # Iterate through list backwards to avoid index deletion mishaps
     for post in reversed(post_list):
@@ -86,34 +78,40 @@ def process_topic(db, cursor, topic):
                 try:
                     if post['hash'] in existing_hash_dict[topic]:
                         pass # We already have it; don't need
-                    else:
-                        pass # Don't yet have this post for this topic; make association
+                    else: # Don't yet have this post for this topic; make association
                         post_list.remove
+                        auxillary_post_list.append(post)
                 except Exception as e:
                     pass # This is a new topic; need to make the association
             else:
                 pass # We don't have this post yet; store it.
 
-    if post_list:
-        store_posts(db, cursor, post_list)
+    if post_list or auxillary_post_list:
+        store_posts(db, cursor, post_list, auxillary_post_list)
 
-    return len(post_list)
+    return len(post_list) + len (auxillary_post_list)
 
-def store_posts(db, cursor, post_list):
+def store_posts(db, cursor, post_list, aux_post_list):
     # store_posts()
     # Accepts cursor, list of discovered posts
     # Stores the posts and creates an entry in the xref table
 
     # == Store each post in weibo_oracle ==
-    oracle_sql = build_oracle_query(db, post_list)
-    cursor.execute(oracle_sql)
+    if post_list:
+        oracle_sql = build_oracle_query(db, post_list)
+        cursor.execute(oracle_sql)
 
-    # == Update post_list with new kps ==
-    post_list = augment_post_list_with_kp(cursor, post_list)
+        # = Update post_list with new KPs =
+        post_list = augment_post_list_with_kp(cursor, post_list)
 
     # == Manage cross reference table entries ==
     crossref_sql = build_crossref_query(db, post_list)
     cursor.execute(crossref_sql)
+
+    # = Manage auxillary cross reference entries =
+    if aux_post_list:
+        aux_sql = build_crossref_query(db, aux_post_list)
+        cursor.execute(aux_sql)
 
 def build_oracle_query(db, post_list):
     # build_oracle_query()

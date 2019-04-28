@@ -3,7 +3,11 @@ from secrets import corpora # Improve this later
 from weibo import get_weibo_results
 
 def scrape_weibo(debug_flag=False):
+    # scrape_weibo()
+    # Driver class; creates DB connection, processes posts, stores, and prints out debug info
+
     begin_time = time.time()
+
     # ==Connect to corpora==
     db = MySQLdb.connect(host=corpora['host'], user=corpora['username'], passwd=corpora['password'],
      db=corpora['database'], use_unicode=True)
@@ -12,9 +16,7 @@ def scrape_weibo(debug_flag=False):
     # == Return all distinct free_weibo_topics ==
     topic_list = pull_freeweibo_topics(cursor)
 
-
     # == Process topics ==
-    saved_topics = 0
     saved_posts = []
 
     for topic in topic_list:
@@ -32,16 +34,12 @@ def scrape_weibo(debug_flag=False):
         for num_saved, topic in zip(saved_posts, topic_list):
             print ("Topic: [{0}] | Saved: [{1}]".format(topic, num_saved))
         print("===============================================")
-def pull_freeweibo_topics(cursor, topic=None):
+
+        
+def pull_freeweibo_topics(cursor):
     # pull_freeweibo_topics()
-    # Grabs all topics we have from freeweibo that match a topic; distinct if topic is None
-
-    #TODO: Generalize this method better
-
-    if topic:
-        sql = "SELECT kp FROM freeweibo_topics WHERE topic = '{0}'".format(topic)
-    else:
-        sql = "SELECT DISTINCT topic FROM freeweibo_topics"
+    # Grabs all distinct topics we have from freewebo_topics
+    sql = "SELECT DISTINCT topic FROM freeweibo_topics"
 
     cursor.execute(sql)
     topics = cursor.fetchall()
@@ -53,6 +51,7 @@ def pull_freeweibo_topics(cursor, topic=None):
 def process_topic(db, cursor, topic):
     # process_topic()
     # Scrapes a list of posts relating to the topic, stores them, and makes entries in xref table
+    # Returns number of posts processed
 
     post_list = get_weibo_results(topic)
 
@@ -69,22 +68,24 @@ def process_topic(db, cursor, topic):
 
     # Iterate through list backwards to avoid index deletion mishaps
     for post in reversed(post_list):
-        if post['hash'] in run_hash_list: # We've already found this post in this topic run
+        phash = post['hash']
+        ptopic = post['topic']
+
+        if phash in run_hash_list: # We've already found this post for this topic in this run
             post_list.remove(post)
-        else:
-            run_hash_list.append(post['hash'])
-            if post['hash'] in all_hashes: # We have this post, but we need to check for this topic
+        else: # We haven't come across this post for this topic in this run
+            if phash in all_hashes: # We have this post in the db, but maybe not for this topic
                 post_list.remove(post)
                 try:
-                    if post['hash'] in existing_hash_dict[topic]:
-                        pass # We already have it; don't need
+                    if phash in existing_hash_dict[ptopic]:  # We already have it for this topic
+                        pass
                     else: # Don't yet have this post for this topic; make association
-                        post_list.remove
                         auxillary_post_list.append(post)
-                except Exception as e:
-                    pass # This is a new topic; need to make the association
-            else:
-                pass # We don't have this post yet; store it.
+                except Exception as e: # We don't have any posts yet for this topic
+                    auxillary_post_list.append(post)
+
+            else: # We don't have this post in the db; store it.
+                run_hash_list.append(phash)
 
     if post_list or auxillary_post_list:
         store_posts(db, cursor, post_list, auxillary_post_list)
@@ -104,12 +105,13 @@ def store_posts(db, cursor, post_list, aux_post_list):
         # = Update post_list with new KPs =
         post_list = augment_post_list_with_kp(cursor, post_list)
 
-    # == Manage cross reference table entries ==
-    crossref_sql = build_crossref_query(db, post_list)
-    cursor.execute(crossref_sql)
+        # == Manage cross reference table entries ==
+        crossref_sql = build_crossref_query(db, post_list)
+        cursor.execute(crossref_sql)
 
     # = Manage auxillary cross reference entries =
     if aux_post_list:
+        aux_post_list = augment_post_list_with_kp(cursor, aux_post_list)
         aux_sql = build_crossref_query(db, aux_post_list)
         cursor.execute(aux_sql)
 
@@ -167,7 +169,7 @@ def get_hash_set(cursor):
 
 def augment_post_list_with_kp(cursor, post_list):
     # augment_post_list_with_kp()
-    # Modifies and returns a post list augmented w/ the matching KPs associated with that hash
+    # Modifies and returns a post list augmented w/ the matching WO KPs associated with that hash
     # Used by store_posts() after weibo_oracle posts have been newly inserted
 
     hash_list = ", ".join([str(post['hash']) for post in post_list])
